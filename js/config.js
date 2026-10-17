@@ -10,6 +10,18 @@ export const ALTEZZA_MECH = 8.4;
 export const PORTATA_RACCOLTA = 7;
 export const PREFISSO_PEER = 'robotwar-it-';
 export const MAX_GIOCATORI = 8;
+
+// Server per collegare PC su reti diverse. STUN trova l'indirizzo pubblico; TURN fa da ponte
+// quando il collegamento diretto è bloccato (alcuni router, reti mobili, reti aziendali).
+// Per un TURN dedicato e più affidabile (es. account gratuito Metered/OpenRelay) aggiungere qui:
+// { urls: ['turn:HOST:443?transport=tcp'], username: 'UTENTE', credential: 'PASSWORD' }
+export const ICE_SERVER = [
+  { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302', 'stun:stun.cloudflare.com:3478'] },
+  {
+    urls: ['turn:eu-0.turn.peerjs.com:3478', 'turn:us-0.turn.peerjs.com:3478', 'turn:eu-0.turn.peerjs.com:3478?transport=tcp', 'turn:us-0.turn.peerjs.com:3478?transport=tcp'],
+    username: 'peerjs', credential: 'peerjsp',
+  },
+];
 export const MAX_MECH = 16;
 export const ZONA_INIZIALE = 680;
 

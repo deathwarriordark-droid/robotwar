@@ -190,7 +190,7 @@ export class Hud {
     if (s.taglia) ev.push(`☠ TAGLIA: ${s.taglia}`);
     this.el.evento.style.display = ev.length ? 'block' : 'none';
     this.el.evento.textContent = ev.join('  ·  ');
-    this.el.fps.textContent = `FPS ${s.fps}` + (s.ping != null ? ` · PING ${s.ping} ms` : '') + (io ? ` · X ${Math.round(io.x)} Z ${Math.round(io.z)}` : '');
+    this.el.fps.textContent = `FPS ${s.fps}` + (s.ping != null ? ' · ' + s.ping : '') + (io ? ` · X ${Math.round(io.x)} Z ${Math.round(io.z)}` : '');
 
     // stato mech
     if (io && tu && io.stato !== 'drone') {

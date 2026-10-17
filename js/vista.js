@@ -261,8 +261,21 @@ export class Vista {
     this.tm = snap.tm;
     // orologio dell'host stimato in locale: serve a interpolare gli altri mech senza scatti
     if (!this.host) {
-      if (this.tServer == null || Math.abs(snap.tm - this.tServer) > 0.5) this.tServer = snap.tm;
-      else this.tServer += (snap.tm - this.tServer) * 0.08;
+      // orologio dell'host: si segue il pacchetto arrivato più in fretta (offset massimo), che è il meno ritardato
+      const ora = performance.now() / 1000, off = snap.tm - ora;
+      if (this.offServer == null || off > this.offServer + 0.5 || off < this.offServer - 1.5) this.offServer = off;
+      else if (off > this.offServer) this.offServer += (off - this.offServer) * 0.5;
+      else this.offServer += (off - this.offServer) * 0.02;
+      // ritardo di interpolazione adattivo: più la rete è irregolare (jitter), più margine si tiene
+      if (this.intervallo == null) { this.intervallo = 1 / 15; this.jitter = 0; this.ritardo = 0.1; }
+      if (this.arrivoPrec != null) {
+        const dA = Math.min(1, ora - this.arrivoPrec);
+        this.intervallo += (dA - this.intervallo) * 0.05;
+        this.jitter += (Math.abs(dA - this.intervallo) - this.jitter) * 0.08;
+      }
+      this.arrivoPrec = ora;
+      const obiettivo = Math.max(0.09, Math.min(0.35, this.intervallo * 1.5 + this.jitter * 2.5));
+      this.ritardo += (obiettivo - this.ritardo) * (obiettivo > this.ritardo ? 0.3 : 0.02);
     }
     if (snap.sl) for (const [id, str] of snap.sl) {
       const e = this.entita.get(id);
@@ -568,7 +581,6 @@ export class Vista {
   // ---------------- frame ----------------
   frame(dt, input, zoom) {
     this.tempo += dt;
-    if (this.tServer != null) this.tServer += dt;
     const io = this.entita.get(this.mioId);
     const emp = this.arena.emp > 0;
 
@@ -579,7 +591,7 @@ export class Vista {
       if (mio && this.pred && !this.host && (this.pred.stato === 'vivo' || this.pred.stato === 'lancio' || this.pred.stato === 'drone') && e.stato === this.pred.stato) { tx = this.pred.x; ty = this.pred.y; tz = this.pred.z; }
       let interp = null;
       if (!mio && !this.host && e.buf.length) { interp = this.interpola(e); tx = interp.x; ty = interp.y; tz = interp.z; }
-      const k = interp ? 1 : 1 - Math.exp(-dt * (mio ? 22 : 12));
+      const k = 1 - Math.exp(-dt * (interp ? 25 : mio ? 22 : 12));
       if (e.pos.distanceToSquared(v1.set(tx, ty, tz)) > 900) e.pos.set(tx, ty, tz);
       else e.pos.lerp(v1, k);
       const yawT = mio && (e.stato === 'vivo' || e.stato === 'drone' || e.stato === 'lancio') ? input.yaw : interp ? interp.yaw : e.tyaw;
@@ -807,9 +819,9 @@ export class Vista {
     for (const r of this.raggi) r.t = 0;
   }
 
-  // posizione di un mech remoto 100 ms nel passato, tra due snapshot (o poco oltre l'ultimo)
+  // posizione di un mech remoto leggermente nel passato (ritardo adattivo), tra due snapshot o poco oltre l'ultimo
   interpola(e) {
-    const b = e.buf, t = this.tServer - 0.1;
+    const b = e.buf, t = performance.now() / 1000 + this.offServer - this.ritardo;
     if (t <= b[0].t) return b[0];
     for (let i = b.length - 1; i > 0; i--) {
       const a = b[i - 1], c = b[i];
@@ -821,7 +833,7 @@ export class Vista {
         return { x: a.x + (c.x - a.x) * k, y: a.y + (c.y - a.y) * k, z: a.z + (c.z - a.z) * k, yaw: a.yaw + dy * k };
       }
     }
-    const u = b[b.length - 1], ex = Math.min(0.2, t - u.t);
+    const u = b[b.length - 1], ex = Math.min(0.35, t - u.t);
     return { x: u.x + e.vx * ex, y: u.y, z: u.z + e.vz * ex, yaw: u.yaw };
   }
 

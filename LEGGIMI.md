@@ -16,7 +16,9 @@ Poi apri http://localhost:8080 (serve un server: aprendo `index.html` con doppio
 2. Gli amici aprono il link, scelgono il mech e premono ENTRA.
 3. L'host sceglie le regole (Co-op contro i bot, Tutti contro tutti, Coppie, Squadre da 4) e preme AVVIA PARTITA.
 
-Il link funziona per gli amici solo se il gioco sta su un indirizzo pubblico (vedi sotto). L'host fa da server nel suo browser: se chiude la scheda, la partita finisce. Fino a 8 giocatori umani più i bot (massimo 16 mech).
+Il link funziona per gli amici solo se il gioco sta su un indirizzo pubblico (vedi sotto).
+
+In partita, in basso a destra, chi si collega vede PING, JITTER e il tipo di collegamento: DIRETTA (da browser a browser) oppure PONTE (passa da un server TURN quando il router blocca il collegamento diretto). Se un amico non riesce proprio a collegarsi, la soluzione più solida è un server TURN dedicato: si aggiunge in `js/config.js` (`ICE_SERVER`). L'host fa da server nel suo browser: se chiude la scheda, la partita finisce. Fino a 8 giocatori umani più i bot (massimo 16 mech).
 Su alcune reti aziendali o con NAT molto restrittivi la connessione diretta WebRTC può non riuscire: in quel caso prova da un'altra rete.
 
 ## Pubblicazione gratuita (GitHub Pages)

@@ -2,7 +2,9 @@
 // Due canali per ogni giocatore:
 //  - "affidabile" (ordinato): lobby, chat, eventi di gioco, inizio e fine partita
 //  - "veloce" (non ordinato): posizioni e comandi, così un pacchetto in ritardo non blocca gli altri
-import { PREFISSO_PEER } from './config.js';
+import { PREFISSO_PEER, ICE_SERVER } from './config.js';
+
+const OPZ_PEER = { debug: 1, config: { iceServers: ICE_SERVER, sdpSemantics: 'unified-plan' } };
 
 export class Rete {
   constructor() {
@@ -24,7 +26,7 @@ export class Rete {
       if (!window.Peer) { ko(new Error('PeerJS non caricato: controlla la connessione')); return; }
       this.host = true;
       let aperto = false;
-      this.peer = new window.Peer(PREFISSO_PEER + codice, { debug: 1 });
+      this.peer = new window.Peer(PREFISSO_PEER + codice, OPZ_PEER);
       this.peer.on('open', (id) => { aperto = true; ok(id); });
       this.peer.on('error', (e) => { if (!aperto) ko(e); else console.warn('PeerJS', e.type || e); });
       // se cade il collegamento col server di segnalazione, le partite in corso continuano: si riprova
@@ -52,7 +54,7 @@ export class Rete {
       if (!window.Peer) { ko(new Error('PeerJS non caricato: controlla la connessione')); return; }
       this.host = false;
       let fatto = false;
-      this.peer = new window.Peer({ debug: 1 });
+      this.peer = new window.Peer(OPZ_PEER);
       const fallisci = (e) => { if (!fatto) { fatto = true; ko(e); } };
       this.peer.on('error', (e) => {
         if (e.type === 'peer-unavailable') fallisci(new Error('Stanza non trovata: controlla il codice'));
@@ -62,7 +64,7 @@ export class Rete {
       this.peer.on('open', () => {
         const dest = PREFISSO_PEER + codice;
         const conn = this.peer.connect(dest, { label: 'affidabile', reliable: true, serialization: 'json' });
-        const timer = setTimeout(() => fallisci(new Error('Nessuna risposta dalla stanza')), 15000);
+        const timer = setTimeout(() => fallisci(new Error('Nessuna risposta dalla stanza: controlla il codice o riprova')), 25000);
         conn.on('open', () => {
           clearTimeout(timer);
           this.connHost = conn;
@@ -91,6 +93,22 @@ export class Rete {
   trasmetti(msg) { for (const c of this.conns.values()) this.manda(c, msg); }
   aHost(msg) { this.manda(this.connHost, msg); }
   aHostVeloce(msg) { if (!this.manda(this.connHostVeloce, msg)) this.aHost(msg); }
+
+  // collegamento diretto o tramite server ponte (TURN), letto dalle statistiche WebRTC
+  async tipoCollegamento() {
+    const pc = this.connHost && this.connHost.peerConnection;
+    if (!pc || !pc.getStats) return null;
+    try {
+      const st = await pc.getStats();
+      let coppia = null;
+      st.forEach((r) => { if (r.type === 'transport' && r.selectedCandidatePairId) coppia = st.get(r.selectedCandidatePairId); });
+      if (!coppia) st.forEach((r) => { if (r.type === 'candidate-pair' && r.state === 'succeeded' && (r.nominated || r.selected)) coppia = r; });
+      if (!coppia) return null;
+      const loc = st.get(coppia.localCandidateId), rem = st.get(coppia.remoteCandidateId);
+      const relay = (loc && loc.candidateType === 'relay') || (rem && rem.candidateType === 'relay');
+      return { tipo: relay ? 'PONTE' : 'DIRETTA', rtt: coppia.currentRoundTripTime != null ? Math.round(coppia.currentRoundTripTime * 1000) : null };
+    } catch { return null; }
+  }
 
   chiudi() {
     this.suUscita = () => {};

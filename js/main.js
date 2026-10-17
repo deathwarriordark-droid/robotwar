@@ -82,6 +82,7 @@ const rete = new Rete();
 let stato = 'hangar';
 let vista = null, sim = null, mappa = null, mioId = null, partita = null;
 let seq = 0, tick = 0, acc = 0, bufferEv = [], pingMs = null, fpsMedia = 60, fineMostrata = false, ultimoSnapN = 0, ultimiInput = [];
+let ultimoArrivo = 0, avvisoRete = false, tipoRete = '';
 let lobby = null; // { codice, host, giocatori, opz }
 
 const input = new Input(canvas, {
@@ -238,7 +239,12 @@ async function entraStanza(codice, tentativo = 0) {
   rete.aHost({ t: 'ciao', nome: nomePilota(), aspetto: dati.aspetto, v: VERSIONE, chiave: CHIAVE });
   if (rientro) toast('Ricollegato: rientro in partita…', 2500);
   else apriLobby();
-  if (!entraStanza.ping) entraStanza.ping = setInterval(() => { if (!rete.host && rete.connHost) rete.aHost({ t: 'ping', c: performance.now() }); }, 2000);
+  if (!entraStanza.ping) entraStanza.ping = setInterval(async () => {
+    if (rete.host || !rete.connHost) return;
+    rete.aHost({ t: 'ping', c: performance.now(), p: pingMs });
+    const tc = await rete.tipoCollegamento();
+    if (tc) tipoRete = tc.tipo;
+  }, 2000);
 }
 
 function apriLobby() {
@@ -268,7 +274,7 @@ function renderLobby() {
     const li = document.createElement('li');
     li.textContent = g.nome;
     const s = document.createElement('small');
-    s.textContent = i === 0 ? 'HOST' : g.pid === rete.id ? 'TU' : '';
+    s.textContent = (i === 0 ? 'HOST' : g.pid === rete.id ? 'TU' : '') + (lobby.host && g.ping != null ? ` ${g.ping} ms` : '');
     li.appendChild(s);
     ul.appendChild(li);
   });
@@ -352,7 +358,12 @@ function messaggioHost(pid, m) {
       for (const inp of Array.isArray(m.i) ? m.i : [m.i]) sim.riceviInput(id, inp);
       break;
     }
-    case 'ping': rete.invia(pid, { t: 'pong', c: m.c }); break;
+    case 'ping': {
+      rete.invia(pid, { t: 'pong', c: m.c });
+      const g = lobby && lobby.giocatori.find((x) => x.pid === pid);
+      if (g && typeof m.p === 'number' && g.ping !== m.p) { g.ping = m.p; if (stato === 'lobby') renderLobby(); }
+      break;
+    }
   }
 }
 
@@ -372,6 +383,7 @@ function messaggioClient(m) {
     case 'snap':
       if (!vista || (m.n && m.n <= ultimoSnapN)) break; // il canale veloce non è ordinato: si scartano i vecchi
       ultimoSnapN = m.n || 0;
+      ultimoArrivo = performance.now();
       vista.applicaSnapshot(m, m.tu);
       break;
     case 'ev': if (vista) vista.eventi(m.ev || []); break;
@@ -454,6 +466,13 @@ function tickFisso() {
       fineMostrata = true;
     }
   } else {
+    // controllo connessione: niente dati dall'host per un po' = avviso, poi ricollegamento automatico
+    if (tick % 15 === 0 && ultimoArrivo) {
+      const buco = performance.now() - ultimoArrivo;
+      if (buco > 2500 && !avvisoRete) { avvisoRete = true; toast('Connessione instabile…', 2500); }
+      if (buco < 1000) avvisoRete = false;
+      if (buco > 9000 && rete.connHost) { ultimoArrivo = performance.now(); try { rete.connHost.close(); } catch { /* ignora */ } }
+    }
     ultimiInput.push(inp);
     if (ultimiInput.length > 3) ultimiInput.shift();
     rete.aHostVeloce({ t: 'in', i: ultimiInput });
@@ -492,6 +511,11 @@ function controllaClienti() {
     const m = id && sim.perId.get(id);
     if (m && !m.disconnesso) sim.disconnetti(pid);
   }
+}
+
+function testoRete() {
+  const j = vista && vista.jitter != null ? Math.round(vista.jitter * 1000) : null;
+  return `PING ${pingMs ?? '…'} ms` + (j != null ? ` · JITTER ${j} ms` : '') + (tipoRete ? ` · ${tipoRete}` : '');
 }
 
 function mostraRisultati(ris, vinc) {
@@ -664,7 +688,7 @@ function ciclo(t) {
   adatta(dt);
   if ((stato === 'partita' || stato === 'risultati') && vista) {
     vista.frame(dt, input, partita ? partita.zoom : false);
-    hud.aggiorna(vista.statoHud(Math.round(fpsMedia), partita && !partita.host ? pingMs : null, partita ? partita.opz.formato : 'tutti'), dt);
+    hud.aggiorna(vista.statoHud(Math.round(fpsMedia), partita && !partita.host ? testoRete() : null, partita ? partita.opz.formato : 'tutti'), dt);
     disegna(vista.scena, vista.camera);
   } else {
     hangar.frame(dt, disegna);
