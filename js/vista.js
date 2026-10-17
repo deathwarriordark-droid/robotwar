@@ -274,7 +274,7 @@ export class Vista {
         this.jitter += (Math.abs(dA - this.intervallo) - this.jitter) * 0.08;
       }
       this.arrivoPrec = ora;
-      const obiettivo = Math.max(0.09, Math.min(0.35, this.intervallo * 1.5 + this.jitter * 2.5));
+      const obiettivo = Math.max(0.06, Math.min(0.3, this.intervallo * 1.6 + this.jitter * 2.2));
       this.ritardo += (obiettivo - this.ritardo) * (obiettivo > this.ritardo ? 0.3 : 0.02);
     }
     if (snap.sl) for (const [id, str] of snap.sl) {
@@ -363,8 +363,8 @@ export class Vista {
         }
         case 'mi': {
           const e = this.entita.get(ev.id);
-          if (e) e.modello.sparo(ev.s);
-          if (e) this.audio.suona(SUONO_ARMA[ev.c] || 'pugni', [e.pos.x, e.pos.y + 4, e.pos.z], 0.9);
+          const giaVisto = ev.id === this.mioId && !this.host && performance.now() - ((this.sparoLoc || [])[ev.s] || 0) < 450;
+          if (e && !giaVisto) { e.modello.sparo(ev.s); this.audio.suona(SUONO_ARMA[ev.c] || 'pugni', [e.pos.x, e.pos.y + 4, e.pos.z], 0.9); }
           break;
         }
         case 'esp': this.esplosione(ev.x, ev.y, ev.z, ev.r); break;
@@ -480,7 +480,19 @@ export class Vista {
     this.relitti.set(ev.id, { modello, x: ev.x, y: ev.y, z: ev.z, t: 0 });
   }
 
-  sparoVisivo(id, s, c, pos, missile) {
+  // sparo del proprio mech mostrato subito, prima della conferma dell'host
+  sparoLocale(s, c) {
+    const e = this.entita.get(this.mioId);
+    if (!e) return;
+    (this.sparoLoc ||= [])[s] = performance.now();
+    const nodo = s < 2 ? e.modello.braccia[s].presa : e.modello.supporti[s - 2];
+    nodo.getWorldPosition(v2);
+    this.sparoVisivo(this.mioId, s, c, [v2.x + Math.sin(e.yaw) * 2.2, v2.y, v2.z + Math.cos(e.yaw) * 2.2], c === 'missili' ? 1 : 0, true);
+  }
+
+  sparoVisivo(id, s, c, pos, missile, locale = false) {
+    // la conferma dell'host di uno sparo già mostrato in locale non si ripete
+    if (!locale && id === this.mioId && !this.host && performance.now() - ((this.sparoLoc || [])[s] || 0) < 450) return;
     const e = this.entita.get(id);
     const FORZA = { cannone: 1.6, railgun: 1.6, dispersione: 1.2, mortaio: 1.0, missili: 0.6, mitra: 0.35, laser: 0.45 };
     if (e && s < 2) e.modello.sparo(s, FORZA[c] || 1);

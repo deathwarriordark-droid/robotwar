@@ -1,6 +1,6 @@
 // RobotWar — avvio, schermate (hangar → lobby → partita → risultati) e ciclo di gioco
 import * as THREE from 'three';
-import { VERSIONE, TICK, GUIDA, COMANDI, FORMATI, MAX_GIOCATORI, DIFFICOLTA } from './config.js';
+import { VERSIONE, TICK, GUIDA, COMANDI, FORMATI, MAX_GIOCATORI, DIFFICOLTA, ARMI } from './config.js';
 import { generaMappa } from './mondo.js';
 import { Simulazione } from './simulazione.js';
 import { Vista } from './vista.js';
@@ -38,6 +38,16 @@ const CHIAVE = (() => { try { let k = sessionStorage.getItem('robotwar-chiave');
 
 // ---------------- motore ----------------
 const canvas = $('gioco');
+// primo avvio: con schede video integrate o software si parte in qualità più bassa
+if (!localStorage.getItem('robotwar')) {
+  try {
+    const gl = document.createElement('canvas').getContext('webgl2') || document.createElement('canvas').getContext('webgl');
+    const ext = gl && gl.getExtension('WEBGL_debug_renderer_info');
+    const gpu = ext ? String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL)) : '';
+    if (/swiftshader|llvmpipe|software|mali|adreno|powervr/i.test(gpu) || /Android|iPhone|iPad/i.test(navigator.userAgent)) dati.imp.qualita = 'bassa';
+    else if (/intel|uhd|iris|radeon\(tm\) graphics|vega \d graphics|apple m1/i.test(gpu) && !/arc/i.test(gpu)) dati.imp.qualita = 'media';
+  } catch { /* ignora */ }
+}
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: dati.imp.qualita !== 'bassa', powerPreference: 'high-performance' });
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -456,7 +466,9 @@ function tickFisso() {
     vista.eventi(evs);
     if (partita.multi) {
       bufferEv.push(...evs);
-      if (tick % 2 === 0) inviaAiClient(snap, slot);
+      // invio raccolto: al massimo uno per giro del motore, mai a raffica (vedi passiFissi)
+      const ogni = rete.conns.size <= 3 ? 1 : 2;
+      if (tick % ogni === 0) { partita.daInviare = true; partita.ultimoSnap = snap; partita.ultimaSlot = slot; }
       if (tick % 30 === 0) controllaClienti();
     }
     if (sim.finita && !fineMostrata) {
@@ -473,6 +485,7 @@ function tickFisso() {
       if (buco < 1000) avvisoRete = false;
       if (buco > 9000 && rete.connHost) { ultimoArrivo = performance.now(); try { rete.connHost.close(); } catch { /* ignora */ } }
     }
+    sparoLocale(inp);
     ultimiInput.push(inp);
     if (ultimiInput.length > 3) ultimiInput.shift();
     rete.aHostVeloce({ t: 'in', i: ultimiInput });
@@ -482,7 +495,7 @@ function tickFisso() {
 
 // Invio a ogni giocatore: eventi sul canale affidabile, stato sul canale veloce.
 // Per alleggerire l'upload dell'host: armi solo quando cambiano (più un ripasso ogni ~2 s)
-// e mech lontani da quel giocatore aggiornati un invio su tre.
+// e mech lontani da quel giocatore aggiornati un invio su due.
 function inviaAiClient(snap, slot) {
   const ev = bufferEv;
   bufferEv = [];
@@ -497,7 +510,7 @@ function inviaAiClient(snap, slot) {
     const ripasso = cl.invii % 30 === 1;
     const sl = slot.filter(([mid, str]) => ripasso || cl.slot.get(mid) !== str);
     for (const [mid, str] of sl) cl.slot.set(mid, str);
-    const vicino = (row) => !me || row[0] === id || cl.invii % 3 === 0 || Math.abs(row[2] - me.x) + Math.abs(row[4] - me.z) < 420;
+    const vicino = (row) => !me || row[0] === id || cl.invii % 2 === 0 || Math.abs(row[2] - me.x) + Math.abs(row[4] - me.z) < 420;
     rete.inviaVeloce(pid, { ...snap, n: partita.nSnap, m: snap.m.filter(vicino), sl: sl.length ? sl : undefined, tu: id ? sim.datiPersonali(id) : null });
   }
 }
@@ -511,6 +524,24 @@ function controllaClienti() {
     const m = id && sim.perId.get(id);
     if (m && !m.disconnesso) sim.disconnetti(pid);
   }
+}
+
+// Chi si collega vede subito lampo, suono e rinculo del proprio sparo (il colpo vero lo decide l'host)
+function sparoLocale(inp) {
+  const e = vista.entita.get(mioId), tu = vista.tu;
+  if (!e || !tu || e.stato !== 'vivo' || tu.surr > 0 || !(inp.f1 || inp.f2)) return;
+  const ora = performance.now();
+  partita.cdLoc = partita.cdLoc || [0, 0, 0, 0];
+  const prova = (i) => {
+    if ((i === 0 && e.hp.bs <= 0) || (i === 1 && e.hp.bd <= 0)) return;
+    const o = e.slot[i], c = o ? o.c : i < 2 ? 'pugni' : null, def = c && ARMI[c];
+    if (!def || ora < partita.cdLoc[i]) return;
+    if (def.carica && (tu.ric[i] > 0 || tu.mun[i] <= 0)) return;
+    partita.cdLoc[i] = ora + def.cad * 1000;
+    vista.sparoLocale(i, c);
+  };
+  if (inp.f1) { prova(0); prova(1); }
+  if (inp.f2 && !(e.flags & 256)) { prova(2); prova(3); }
 }
 
 function testoRete() {
@@ -671,6 +702,7 @@ function passiFissi() {
   let n = 0;
   while (acc >= TICK && n < 8) { acc -= TICK; tickFisso(); n++; }
   if (n === 8) acc = 0;
+  if (partita && partita.daInviare) { partita.daInviare = false; inviaAiClient(partita.ultimoSnap, partita.ultimaSlot); }
 }
 try {
   const motore = new Worker(URL.createObjectURL(new Blob(['setInterval(() => postMessage(0), 15);'], { type: 'text/javascript' })));
