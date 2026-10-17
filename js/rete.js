@@ -1,17 +1,33 @@
 // RobotWar — multiplayer peer-to-peer con PeerJS (WebRTC). L'host fa da server nel browser.
 // Due canali per ogni giocatore:
 //  - "affidabile" (ordinato): lobby, chat, eventi di gioco, inizio e fine partita
-//  - "veloce" (non ordinato): posizioni e comandi, così un pacchetto in ritardo non blocca gli altri
+//  - "rapido" (WebRTC senza ritrasmissioni): posizioni e comandi, sempre i più freschi
 import { PREFISSO_PEER, ICE_SERVER } from './config.js';
 
 const OPZ_PEER = { debug: 1, config: { iceServers: ICE_SERVER, sdpSemantics: 'unified-plan' } };
+
+// Canale rapido: WebRTC puro, non ordinato e SENZA ritrasmissioni (un pacchetto perso si salta,
+// ne arriva uno più nuovo). Si apre dentro lo stesso collegamento già stabilito (negotiated: stesso id
+// sui due lati), quindi niente seconda trattativa di rete.
+const ID_RAPIDO = 77;
+function apriRapido(conn, suDati) {
+  const pc = conn.peerConnection;
+  if (!pc || !pc.createDataChannel) return null;
+  try {
+    const ch = pc.createDataChannel('rapido', { negotiated: true, id: ID_RAPIDO, ordered: false, maxRetransmits: 0 });
+    ch.onmessage = (e) => { try { suDati(JSON.parse(e.data)); } catch { /* pacchetto rovinato: si ignora */ } };
+    return ch;
+  } catch (e) { console.warn('canale rapido non disponibile', e); return null; }
+}
 
 export class Rete {
   constructor() {
     this.peer = null;
     this.host = false;
     this.conns = new Map();   // pid -> canale affidabile
-    this.veloci = new Map();  // pid -> canale veloce
+    this.veloci = new Map();  // pid -> canale veloce PeerJS (versioni vecchie del gioco)
+    this.rapidi = new Map();  // pid -> canale rapido WebRTC
+    this.rapidoHost = null;
     this.connHost = null;
     this.connHostVeloce = null;
     this.suMessaggio = () => {};
@@ -36,12 +52,18 @@ export class Rete {
         conn.on('open', () => {
           if (veloce) { this.veloci.set(conn.peer, conn); return; }
           this.conns.set(conn.peer, conn);
+          this.rapidi.set(conn.peer, apriRapido(conn, (d) => this.suMessaggio(conn.peer, d)));
           this.suEntrata(conn.peer);
         });
         conn.on('data', (d) => this.suMessaggio(conn.peer, d));
         const chiusa = () => {
           if (veloce) { if (this.veloci.get(conn.peer) === conn) this.veloci.delete(conn.peer); return; }
-          if (this.conns.get(conn.peer) === conn) { this.conns.delete(conn.peer); this.suUscita(conn.peer); }
+          if (this.conns.get(conn.peer) === conn) {
+            this.conns.delete(conn.peer);
+            try { this.rapidi.get(conn.peer)?.close(); } catch { /* ignora */ }
+            this.rapidi.delete(conn.peer);
+            this.suUscita(conn.peer);
+          }
         };
         conn.on('close', chiusa);
         conn.on('error', chiusa);
@@ -70,10 +92,7 @@ export class Rete {
           this.connHost = conn;
           fatto = true;
           ok(this.peer.id);
-          const v = this.peer.connect(dest, { label: 'veloce', reliable: false, serialization: 'json' });
-          v.on('open', () => { this.connHostVeloce = v; });
-          v.on('data', (d) => this.suMessaggio('host', d));
-          v.on('close', () => { if (this.connHostVeloce === v) this.connHostVeloce = null; });
+          this.rapidoHost = apriRapido(conn, (d) => this.suMessaggio('host', d));
         });
         conn.on('data', (d) => this.suMessaggio('host', d));
         conn.on('close', () => { if (this.connHost === conn) this.suUscita('host'); });
@@ -87,12 +106,19 @@ export class Rete {
     return false;
   }
 
+  // canale rapido: se la coda in uscita è piena il pacchetto si salta (true = inviato o saltato apposta, null = canale non pronto)
+  mandaRapido(ch, msg) {
+    if (!ch || ch.readyState !== 'open') return null;
+    if (ch.bufferedAmount > 16384) return false;
+    try { ch.send(JSON.stringify(msg)); return true; } catch { return null; }
+  }
+
   invia(pid, msg) { this.manda(this.conns.get(pid), msg); }
-  // canale veloce, con ripiego su quello affidabile se il veloce non è (ancora) aperto
-  inviaVeloce(pid, msg) { if (!this.manda(this.veloci.get(pid), msg)) this.invia(pid, msg); }
+  // stato e comandi: canale rapido; se non è pronto, ripiego sul veloce PeerJS o sull'affidabile
+  inviaVeloce(pid, msg) { if (this.mandaRapido(this.rapidi.get(pid), msg) !== null) return; if (!this.manda(this.veloci.get(pid), msg)) this.invia(pid, msg); }
   trasmetti(msg) { for (const c of this.conns.values()) this.manda(c, msg); }
   aHost(msg) { this.manda(this.connHost, msg); }
-  aHostVeloce(msg) { if (!this.manda(this.connHostVeloce, msg)) this.aHost(msg); }
+  aHostVeloce(msg) { if (this.mandaRapido(this.rapidoHost, msg) !== null) return; if (!this.manda(this.connHostVeloce, msg)) this.aHost(msg); }
 
   // collegamento diretto o tramite server ponte (TURN), letto dalle statistiche WebRTC
   async tipoCollegamento() {
@@ -116,7 +142,9 @@ export class Rete {
     this.peer = null;
     this.conns.clear();
     this.veloci.clear();
+    this.rapidi.clear();
     this.connHost = null;
     this.connHostVeloce = null;
+    this.rapidoHost = null;
   }
 }
