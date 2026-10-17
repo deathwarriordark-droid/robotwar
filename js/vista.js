@@ -157,7 +157,7 @@ export class Vista {
     const e = {
       r, alleato, modello, drone, targa: tg, marcatore, stato: 'lancio', hp: { t: 1, bs: 1, bd: 1, g: 1 },
       max: r.max || statsDaAspetto(r.aspetto), flags: 0, slotStr: '', slot: [], ap: 0,
-      pos: new THREE.Vector3(), tgt: new THREE.Vector3(), yaw: 0, tyaw: 0, vx: 0, vz: 0, primo: true, passoFase: 0, jetT: 0, su: 0,
+      pos: new THREE.Vector3(), tgt: new THREE.Vector3(), yaw: 0, tyaw: 0, vx: 0, vz: 0, primo: true, passoFase: 0, jetT: 0, su: 0, buf: [],
     };
     this.entita.set(r.id, e);
     return e;
@@ -259,6 +259,18 @@ export class Vista {
   applicaSnapshot(snap, tu) {
     this.ultimoSnap = performance.now();
     this.tm = snap.tm;
+    // orologio dell'host stimato in locale: serve a interpolare gli altri mech senza scatti
+    if (!this.host) {
+      if (this.tServer == null || Math.abs(snap.tm - this.tServer) > 0.5) this.tServer = snap.tm;
+      else this.tServer += (snap.tm - this.tServer) * 0.08;
+    }
+    if (snap.sl) for (const [id, str] of snap.sl) {
+      const e = this.entita.get(id);
+      if (!e || str === e.slotStr) continue;
+      e.slotStr = str;
+      e.slot = str.split('|').map((x) => { if (!x) return null; const [c, r] = x.split(':'); return { c, r: +r }; });
+      e.modello.impostaSlot(str);
+    }
     for (const row of snap.m) {
       const e = this.entita.get(row[0]);
       if (!e) continue;
@@ -268,13 +280,9 @@ export class Vista {
       e.tgt.set(row[2], row[3], row[4]);
       e.tyaw = row[5]; e.ap = row[6];
       e.hp = { t: row[7], bs: row[8], bd: row[9], g: row[10] };
-      if (row[11] !== e.slotStr) {
-        e.slotStr = row[11];
-        e.slot = row[11].split('|').map((x) => { if (!x) return null; const [c, r] = x.split(':'); return { c, r: +r }; });
-        e.modello.impostaSlot(row[11]);
-      }
-      e.flags = row[12]; e.scudo = row[13]; e.vx = row[14]; e.vz = row[15]; e.su = row[16];
-      if (e.primo) { e.pos.copy(e.tgt); e.yaw = e.tyaw; e.primo = false; }
+      e.flags = row[11]; e.scudo = row[12]; e.vx = row[13]; e.vz = row[14]; e.su = row[15];
+      if (e.primo) { e.pos.copy(e.tgt); e.yaw = e.tyaw; e.primo = false; e.buf.length = 0; }
+      if (!this.host) { e.buf.push({ t: snap.tm, x: row[2], y: row[3], z: row[4], yaw: row[5] }); if (e.buf.length > 12) e.buf.shift(); }
     }
     const z = snap.z;
     this.zona = { cx: z[0], cz: z[1], r: z[2], fase: z[3], stato: z[4], t: z[5], tcx: z[6], tcz: z[7], tr: z[8] };
@@ -560,6 +568,7 @@ export class Vista {
   // ---------------- frame ----------------
   frame(dt, input, zoom) {
     this.tempo += dt;
+    if (this.tServer != null) this.tServer += dt;
     const io = this.entita.get(this.mioId);
     const emp = this.arena.emp > 0;
 
@@ -568,14 +577,16 @@ export class Vista {
       const mio = e.r.id === this.mioId;
       let tx = e.tgt.x, ty = e.tgt.y, tz = e.tgt.z;
       if (mio && this.pred && !this.host && (this.pred.stato === 'vivo' || this.pred.stato === 'lancio' || this.pred.stato === 'drone') && e.stato === this.pred.stato) { tx = this.pred.x; ty = this.pred.y; tz = this.pred.z; }
-      const k = 1 - Math.exp(-dt * (mio ? 22 : 12));
+      let interp = null;
+      if (!mio && !this.host && e.buf.length) { interp = this.interpola(e); tx = interp.x; ty = interp.y; tz = interp.z; }
+      const k = interp ? 1 : 1 - Math.exp(-dt * (mio ? 22 : 12));
       if (e.pos.distanceToSquared(v1.set(tx, ty, tz)) > 900) e.pos.set(tx, ty, tz);
       else e.pos.lerp(v1, k);
-      const yawT = mio && (e.stato === 'vivo' || e.stato === 'drone' || e.stato === 'lancio') ? input.yaw : e.tyaw;
+      const yawT = mio && (e.stato === 'vivo' || e.stato === 'drone' || e.stato === 'lancio') ? input.yaw : interp ? interp.yaw : e.tyaw;
       let dy = yawT - e.yaw;
       while (dy > Math.PI) dy -= Math.PI * 2;
       while (dy < -Math.PI) dy += Math.PI * 2;
-      e.yaw += dy * Math.min(1, dt * (mio ? 30 : 12));
+      e.yaw += dy * Math.min(1, dt * (mio || interp ? 30 : 12));
       const vivo = e.stato === 'vivo' || e.stato === 'lancio';
       e.modello.gruppo.visible = vivo && !(mio && this.cockpit && e.stato === 'vivo');
       e.drone.visible = e.stato === 'drone';
@@ -788,6 +799,30 @@ export class Vista {
       if (d.t > 5) m.scale.multiplyScalar(0.95);
       return true;
     });
+  }
+
+  // crea in anticipo i raggi (laser/railgun) così i loro materiali vengono compilati subito
+  preriscalda() {
+    for (let i = 0; i < 6; i++) this.raggio({ c: i % 2 ? 'railgun' : 'laser', r: 0, x1: 0, y1: -500, z1: 0, x2: 0, y2: -499, z2: 0 });
+    for (const r of this.raggi) r.t = 0;
+  }
+
+  // posizione di un mech remoto 100 ms nel passato, tra due snapshot (o poco oltre l'ultimo)
+  interpola(e) {
+    const b = e.buf, t = this.tServer - 0.1;
+    if (t <= b[0].t) return b[0];
+    for (let i = b.length - 1; i > 0; i--) {
+      const a = b[i - 1], c = b[i];
+      if (t >= a.t && t <= c.t) {
+        const k = (t - a.t) / (c.t - a.t || 1);
+        let dy = c.yaw - a.yaw;
+        while (dy > Math.PI) dy -= Math.PI * 2;
+        while (dy < -Math.PI) dy += Math.PI * 2;
+        return { x: a.x + (c.x - a.x) * k, y: a.y + (c.y - a.y) * k, z: a.z + (c.z - a.z) * k, yaw: a.yaw + dy * k };
+      }
+    }
+    const u = b[b.length - 1], ex = Math.min(0.2, t - u.t);
+    return { x: u.x + e.vx * ex, y: u.y, z: u.z + e.vz * ex, yaw: u.yaw };
   }
 
   bersaglioCamera() {

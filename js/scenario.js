@@ -570,8 +570,9 @@ export function costruisciMondo(mappa, qualita = 'alta') {
 
   // ---- erba ----
   const nErba = alta ? 14000 : media ? 6000 : 0;
+  let erba = null;
   if (nErba) {
-    const erba = new THREE.InstancedMesh(geoErba(), new THREE.MeshStandardMaterial({ map: texErba(), alphaTest: 0.45, side: THREE.DoubleSide, roughness: 1, color: 0xc8d8a8 }), nErba);
+    erba = new THREE.InstancedMesh(geoErba(), new THREE.MeshStandardMaterial({ map: texErba(), alphaTest: 0.45, side: THREE.DoubleSide, roughness: 1, color: 0xc8d8a8 }), nErba);
     let ne = 0;
     for (let i = 0; i < nErba * 3 && ne < nErba; i++) {
       const x = (rng() - 0.5) * 1100, z = (rng() - 0.5) * 1100, h = mappa.altezza(x, z);
@@ -626,7 +627,7 @@ export function costruisciMondo(mappa, qualita = 'alta') {
 
   let t = 0;
   return {
-    gruppo, sole, cielo,
+    gruppo, sole, cielo, erba, sassi, nuvole,
     aggiorna(centro, dt = 0.016) {
       t += dt;
       cielo.position.set(centro.x, 0, centro.z);

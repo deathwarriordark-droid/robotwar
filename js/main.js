@@ -20,7 +20,7 @@ const DEBUG = new URLSearchParams(location.search).has('debug');
 const PREDEFINITO = {
   nome: '',
   aspetto: { testa: 1, torso: 1, braccia: 1, gambe: 1, finitura: 0, livrea: 0, luci: 0, emblema: 0, numero: String(10 + Math.floor(Math.random() * 90)) },
-  imp: { qualita: 'alta', scala: 1, distanza: 900, fov: 72, sens: 1, invertiY: false, camera: 'terza', fps: true, touch: 'auto', generale: 0.6, effetti: 0.8, musica: 0.35 },
+  imp: { qualita: 'alta', scala: 1, distanza: 900, fov: 72, sens: 1, invertiY: false, camera: 'terza', fps: true, touch: 'auto', adattiva: true, generale: 0.6, effetti: 0.8, musica: 0.35 },
   stat: { partite: 0, vittorie: 0, uccisioni: 0, migliore: 0 },
   solo: { diff: 'normale', bot: 11 },
 };
@@ -33,17 +33,41 @@ function carica() {
 const dati = carica();
 function salva() { try { localStorage.setItem('robotwar', JSON.stringify(dati)); } catch { /* ignora */ } }
 const nomePilota = () => (dati.nome || '').trim() || 'Pilota';
+// chiave di sessione: permette di rientrare nella stessa partita dopo una caduta di connessione
+const CHIAVE = (() => { try { let k = sessionStorage.getItem('robotwar-chiave'); if (!k) { k = codiceCasuale(10); sessionStorage.setItem('robotwar-chiave', k); } return k; } catch { return codiceCasuale(10); } })();
 
 // ---------------- motore ----------------
 const canvas = $('gioco');
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: dati.imp.qualita !== 'bassa', powerPreference: 'high-performance' });
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+// Qualità adattiva: se gli FPS calano si scende di livello (risoluzione, poi bagliore, ombre, erba)
+const FATTORE_LIVELLO = [1, 0.85, 0.85, 0.72, 0.6];
+let livelloAuto = 0, contaBasso = 0, contaAlto = 0, tAdatta = 0;
+function applicaLivello(l) {
+  livelloAuto = Math.max(0, Math.min(4, l));
+  applicaRisoluzione();
+  if (vista) {
+    const mo = vista.mondo;
+    if (mo.sole) mo.sole.castShadow = dati.imp.qualita === 'alta' && livelloAuto < 3;
+    if (mo.erba) mo.erba.visible = livelloAuto < 4;
+    if (mo.sassi) mo.sassi.visible = livelloAuto < 4;
+  }
+}
+function adatta(dt) {
+  if (!dati.imp.adattiva || stato !== 'partita' || document.hidden) return;
+  tAdatta += dt;
+  if (tAdatta < 2) return;
+  tAdatta = 0;
+  if (fpsMedia < 42) { contaBasso++; contaAlto = 0; } else if (fpsMedia > 57) { contaAlto++; contaBasso = 0; } else { contaBasso = contaAlto = 0; }
+  if (contaBasso >= 2 && livelloAuto < 4) { applicaLivello(livelloAuto + 1); contaBasso = 0; }
+  else if (contaAlto >= 5 && livelloAuto > 0) { applicaLivello(livelloAuto - 1); contaAlto = 0; }
+}
 function applicaRisoluzione() {
   const base = Math.min(devicePixelRatio || 1, dati.imp.qualita === 'alta' ? 2 : dati.imp.qualita === 'media' ? 1.5 : 1);
-  renderer.setPixelRatio(base * dati.imp.scala);
+  renderer.setPixelRatio(base * dati.imp.scala * FATTORE_LIVELLO[livelloAuto]);
   renderer.setSize(innerWidth, innerHeight, false);
-  if (post) { post.attivo = dati.imp.qualita === 'alta'; post.ridimensiona(); }
+  if (post) { post.attivo = dati.imp.qualita === 'alta' && livelloAuto < 2; post.ridimensiona(); }
 }
 let post = null;
 preparaAmbiente(renderer);
@@ -57,7 +81,7 @@ const hud = new Hud();
 const rete = new Rete();
 let stato = 'hangar';
 let vista = null, sim = null, mappa = null, mioId = null, partita = null;
-let seq = 0, tick = 0, acc = 0, bufferEv = [], pingMs = null, fpsMedia = 60, fineMostrata = false;
+let seq = 0, tick = 0, acc = 0, bufferEv = [], pingMs = null, fpsMedia = 60, fineMostrata = false, ultimoSnapN = 0, ultimiInput = [];
 let lobby = null; // { codice, host, giocatori, opz }
 
 const input = new Input(canvas, {
@@ -167,7 +191,7 @@ async function creaStanza(tentativo = 0) {
     return;
   }
   messaggio('msg-hangar', '');
-  lobby = { codice, host: true, giocatori: [{ pid: rete.id, nome: nomePilota(), aspetto: dati.aspetto }], opz: { formato: 'coop', difficolta: 'normale', numBot: 8 } };
+  lobby = { codice, host: true, giocatori: [{ pid: rete.id, nome: nomePilota(), aspetto: dati.aspetto, chiave: CHIAVE }], opz: { formato: 'coop', difficolta: 'normale', numBot: 8 } };
   rete.suEntrata = () => {};
   rete.suUscita = (pid) => {
     if (stato === 'partita' && sim) { sim.disconnetti(pid); return; }
@@ -181,13 +205,20 @@ async function creaStanza(tentativo = 0) {
   apriLobby();
 }
 
-async function entraStanza(codice) {
+async function entraStanza(codice, tentativo = 0) {
   audio.avvia();
   if (!/^[A-Z0-9]{5}$/.test(codice)) { messaggio('msg-hangar', 'Il codice è di 5 caratteri'); return; }
   messaggio('msg-hangar', `Mi collego alla stanza ${codice}…`);
   rete.suMessaggio = (pid, m) => messaggioClient(m);
   rete.suUscita = () => {
     rete.chiudi();
+    // caduta di connessione: si riprova da soli, la partita intanto la porta avanti un bot
+    if ((stato === 'partita' || stato === 'lobby') && tentativo < 6) {
+      toast('Connessione persa: mi ricollego…', 3000);
+      ultimoSnapN = 0;
+      setTimeout(() => entraStanza(codice, tentativo + 1), 1500 + tentativo * 1000);
+      return;
+    }
     lobby = null;
     if (stato === 'partita' || stato === 'lobby') { chiudiPartita(); mostra('hangar'); }
     toast('Connessione con l\'host persa', 4000);
@@ -196,13 +227,17 @@ async function entraStanza(codice) {
     await rete.unisciti(codice);
   } catch (e) {
     rete.chiudi();
+    if (tentativo > 0 && tentativo < 6 && (stato === 'partita' || stato === 'lobby')) { setTimeout(() => entraStanza(codice, tentativo + 1), 2000); return; }
+    if (tentativo > 0) { lobby = null; chiudiPartita(); mostra('hangar'); }
     messaggio('msg-hangar', e.message || 'Connessione fallita');
     return;
   }
   messaggio('msg-hangar', '');
-  lobby = { codice, host: false, giocatori: [], opz: {} };
-  rete.aHost({ t: 'ciao', nome: nomePilota(), aspetto: dati.aspetto, v: VERSIONE });
-  apriLobby();
+  const rientro = tentativo > 0 && stato === 'partita';
+  if (!rientro) lobby = { codice, host: false, giocatori: [], opz: {} };
+  rete.aHost({ t: 'ciao', nome: nomePilota(), aspetto: dati.aspetto, v: VERSIONE, chiave: CHIAVE });
+  if (rientro) toast('Ricollegato: rientro in partita…', 2500);
+  else apriLobby();
   if (!entraStanza.ping) entraStanza.ping = setInterval(() => { if (!rete.host && rete.connHost) rete.aHost({ t: 'ping', c: performance.now() }); }, 2000);
 }
 
@@ -274,7 +309,7 @@ $('lobby-bot').oninput = (e) => { lobby.opz.numBot = +e.target.value; $('lobby-b
 $('btn-esci-lobby').onclick = () => { rete.chiudi(); lobby = null; mostra('hangar'); };
 $('btn-avvia').onclick = () => {
   if (!lobby || !lobby.host) return;
-  const opz = { ...lobby.opz, giocatori: lobby.giocatori.map((g) => ({ pid: g.pid, nome: g.nome, aspetto: g.aspetto })) };
+  const opz = { ...lobby.opz, giocatori: lobby.giocatori.map((g) => ({ pid: g.pid, nome: g.nome, aspetto: g.aspetto, chiave: g.chiave })) };
   avviaPartita({ seme: (Math.random() * 1e9) | 0, opz, host: true, multi: true });
 };
 
@@ -282,11 +317,19 @@ function messaggioHost(pid, m) {
   if (!m || typeof m !== 'object') return;
   switch (m.t) {
     case 'ciao': {
-      if (stato === 'partita') { rete.invia(pid, { t: 'rifiuto', motivo: 'Partita già in corso: riprova tra poco' }); return; }
+      if (stato === 'partita') {
+        const mm = sim && sim.riconnetti(pid, m.chiave);
+        if (!mm) { rete.invia(pid, { t: 'rifiuto', motivo: 'Partita già in corso: riprova tra poco' }); return; }
+        partita.clienti.set(pid, { slot: new Map(), invii: 0, ultimoInput: performance.now() });
+        rete.invia(pid, { t: 'via', seme: partita.seme, opz: partita.opz, roster: sim.roster() });
+        return;
+      }
       if (lobby.giocatori.length >= MAX_GIOCATORI) { rete.invia(pid, { t: 'rifiuto', motivo: 'Stanza piena' }); return; }
       const nome = String(m.nome || 'Pilota').slice(0, 16);
       const aspetto = m.aspetto && typeof m.aspetto === 'object' ? m.aspetto : dati.aspetto;
-      if (!lobby.giocatori.some((g) => g.pid === pid)) lobby.giocatori.push({ pid, nome, aspetto });
+      const chiave = typeof m.chiave === 'string' ? m.chiave.slice(0, 20) : null;
+      lobby.giocatori = lobby.giocatori.filter((g) => g.pid !== pid && !(chiave && g.chiave === chiave));
+      lobby.giocatori.push({ pid, nome, aspetto, chiave });
       chatLobby(null, `${nome} è entrato nella stanza`);
       inviaLobby();
       break;
@@ -301,7 +344,12 @@ function messaggioHost(pid, m) {
     case 'in': {
       if (!sim || !m.i) return;
       const id = sim.idDaPeer(pid);
-      if (id) sim.riceviInput(id, m.i);
+      if (!id) return;
+      const cl = partita.clienti.get(pid);
+      if (cl) cl.ultimoInput = performance.now();
+      const mech = sim.perId.get(id);
+      if (mech.disconnesso) sim.riconnetti(pid, mech.chiave);
+      for (const inp of Array.isArray(m.i) ? m.i : [m.i]) sim.riceviInput(id, inp);
       break;
     }
     case 'ping': rete.invia(pid, { t: 'pong', c: m.c }); break;
@@ -315,12 +363,18 @@ function messaggioClient(m) {
     case 'rifiuto': messaggio('msg-hangar', m.motivo); rete.chiudi(); lobby = null; mostra('hangar'); break;
     case 'chat': chatLobby(m.nome, m.testo); break;
     case 'via': {
+      ultimoSnapN = 0;
       const r = m.roster.find((x) => x.pid === rete.id);
       if (!r) return;
       avviaPartita({ seme: m.seme, opz: m.opz, host: false, multi: true, roster: m.roster, mio: r.id });
       break;
     }
-    case 'snap': if (vista) { vista.applicaSnapshot(m, m.tu); vista.eventi(m.ev || []); } break;
+    case 'snap':
+      if (!vista || (m.n && m.n <= ultimoSnapN)) break; // il canale veloce non è ordinato: si scartano i vecchi
+      ultimoSnapN = m.n || 0;
+      vista.applicaSnapshot(m, m.tu);
+      break;
+    case 'ev': if (vista) vista.eventi(m.ev || []); break;
     case 'fine': mostraRisultati(m.ris, m.vinc); break;
     case 'pong': pingMs = Math.round(performance.now() - m.c); break;
   }
@@ -340,13 +394,17 @@ function avviaPartita({ seme, opz, host, multi, roster, mio }) {
     sim = null;
     mioId = mio;
   }
-  partita = { opz, host, multi };
+  partita = { opz, host, multi, seme, clienti: new Map() };
+  if (host && multi) for (const pid of rete.conns.keys()) partita.clienti.set(pid, { slot: new Map(), invii: 0, ultimoInput: performance.now() });
   hud.prepara(mappa);
   vista = new Vista({ renderer, mappa, roster, mioId, impostazioni: dati.imp, audio, hud, host });
+  applicaLivello(livelloAuto);
+  // precompila gli shader adesso, così il primo sparo o la prima esplosione non fanno scattare il gioco
+  try { vista.preriscalda(); renderer.compile(vista.scena, vista.camera); } catch (e) { console.warn(e); }
   const r = roster.find((x) => x.id === mioId);
   input.yaw = 0; input.pitch = -0.25;
   if (sim) { const m = sim.perId.get(mioId); input.yaw = m.yaw; }
-  seq = 0; tick = 0; acc = 0; bufferEv = []; fineMostrata = false;
+  seq = 0; tick = 0; acc = 0; bufferEv = []; fineMostrata = false; ultimiInput = [];
   mostra('partita');
   hud.annuncio(`LANCIO!<small>${r ? 'Raccogli armi e parti: si parte a mani nude' : ''}</small>`, 'evento', 4);
   if (!input.touch) input.blocca();
@@ -381,18 +439,13 @@ function tickFisso() {
     sim.step(TICK);
     const evs = sim.svuotaEventi();
     const snap = sim.snapshot();
-    vista.applicaSnapshot(snap, sim.datiPersonali(mioId));
+    const slot = sim.slotLista();
+    vista.applicaSnapshot({ ...snap, sl: slot }, sim.datiPersonali(mioId));
     vista.eventi(evs);
     if (partita.multi) {
       bufferEv.push(...evs);
-      if (tick % 3 !== 2) {
-        snap.ev = bufferEv;
-        bufferEv = [];
-        for (const pid of rete.conns.keys()) {
-          const id = sim.idDaPeer(pid);
-          rete.invia(pid, { ...snap, tu: id ? sim.datiPersonali(id) : null });
-        }
-      }
+      if (tick % 2 === 0) inviaAiClient(snap, slot);
+      if (tick % 30 === 0) controllaClienti();
     }
     if (sim.finita && !fineMostrata) {
       const ris = sim.risultati();
@@ -401,8 +454,43 @@ function tickFisso() {
       fineMostrata = true;
     }
   } else {
-    rete.aHost({ t: 'in', i: inp });
+    ultimiInput.push(inp);
+    if (ultimiInput.length > 3) ultimiInput.shift();
+    rete.aHostVeloce({ t: 'in', i: ultimiInput });
     vista.prevedi(inp);
+  }
+}
+
+// Invio a ogni giocatore: eventi sul canale affidabile, stato sul canale veloce.
+// Per alleggerire l'upload dell'host: armi solo quando cambiano (più un ripasso ogni ~2 s)
+// e mech lontani da quel giocatore aggiornati un invio su tre.
+function inviaAiClient(snap, slot) {
+  const ev = bufferEv;
+  bufferEv = [];
+  partita.nSnap = (partita.nSnap || 0) + 1;
+  for (const pid of rete.conns.keys()) {
+    let cl = partita.clienti.get(pid);
+    if (!cl) { cl = { slot: new Map(), invii: 0, ultimoInput: performance.now() }; partita.clienti.set(pid, cl); }
+    cl.invii++;
+    if (ev.length) rete.invia(pid, { t: 'ev', ev });
+    const id = sim.idDaPeer(pid);
+    const me = id && sim.perId.get(id);
+    const ripasso = cl.invii % 30 === 1;
+    const sl = slot.filter(([mid, str]) => ripasso || cl.slot.get(mid) !== str);
+    for (const [mid, str] of sl) cl.slot.set(mid, str);
+    const vicino = (row) => !me || row[0] === id || cl.invii % 3 === 0 || Math.abs(row[2] - me.x) + Math.abs(row[4] - me.z) < 420;
+    rete.inviaVeloce(pid, { ...snap, n: partita.nSnap, m: snap.m.filter(vicino), sl: sl.length ? sl : undefined, tu: id ? sim.datiPersonali(id) : null });
+  }
+}
+
+// Un giocatore che non manda comandi da 6 s viene affidato a un bot finché non torna
+function controllaClienti() {
+  const ora = performance.now();
+  for (const [pid, cl] of partita.clienti) {
+    if (ora - cl.ultimoInput < 6000) continue;
+    const id = sim.idDaPeer(pid);
+    const m = id && sim.perId.get(id);
+    if (m && !m.disconnesso) sim.disconnetti(pid);
   }
 }
 
@@ -494,6 +582,7 @@ function apriImpostazioni() {
     campo('Distanza visiva', rng('distanza', 300, 1500, 50)),
     campo('Campo visivo (FOV)', rng('fov', 55, 100, 1)),
     campo('Mostra FPS', sel('fps', [['true', 'Sì'], ['false', 'No']])),
+    campo('Qualità adattiva (evita i cali di FPS)', sel('adattiva', [['true', 'Sì'], ['false', 'No']])),
     '<h3>AUDIO</h3>',
     campo('Volume generale', rng('generale', 0, 1, 0.05)),
     campo('Effetti', rng('effetti', 0, 1, 0.05)),
@@ -504,7 +593,8 @@ function apriImpostazioni() {
       const k = el.dataset.k;
       let v = el.value;
       if (['sens', 'distanza', 'fov', 'generale', 'effetti', 'musica', 'scala'].includes(k)) v = +v;
-      if (k === 'invertiY' || k === 'fps') v = v === 'true';
+      if (k === 'invertiY' || k === 'fps' || k === 'adattiva') v = v === 'true';
+      if (k === 'adattiva' && !v) livelloAuto = 0;
       i[k] = v;
       const b = $('imp-campi').querySelector(`[data-v="${k}"]`);
       if (b) b.textContent = v;
@@ -534,7 +624,7 @@ applicaImpostazioni();
 
 // ---------------- debug (solo con ?debug) ----------------
 if (DEBUG) {
-  window.robotwar = { get sim() { return sim; }, get vista() { return vista; }, get dati() { return dati; }, input, get mioId() { return mioId; }, renderer, post,
+  window.robotwar = { get sim() { return sim; }, get vista() { return vista; }, get dati() { return dati; }, input, get mioId() { return mioId; }, renderer, post, rete, get livello() { return livelloAuto; },
     avanza(n) { for (let i = 0; i < n && stato === 'partita'; i++) { tickFisso(); if (i % 3 === 0) vista.frame(TICK * 3, input, false); } } };
   addEventListener('keydown', (e) => {
     if (e.code === 'F8' && sim) {
@@ -571,6 +661,7 @@ function ciclo(t) {
   const dt = Math.min(0.1, (t - ultimo) / 1000);
   ultimo = t;
   fpsMedia += (1 / Math.max(dt, 0.001) - fpsMedia) * 0.05;
+  adatta(dt);
   if ((stato === 'partita' || stato === 'risultati') && vista) {
     vista.frame(dt, input, partita ? partita.zoom : false);
     hud.aggiorna(vista.statoHud(Math.round(fpsMedia), partita && !partita.host ? pingMs : null, partita ? partita.opz.formato : 'tutti'), dt);

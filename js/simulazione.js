@@ -4,6 +4,7 @@ import {
   PORTATA_RACCOLTA, FORMATI, statsDaAspetto, PARTI, TELAI,
 } from './config.js';
 import { clamp, lerp, creaRng, r2, r3, mescola } from './util.js';
+const r1 = (v) => Math.round(v * 10) / 10;
 import { aggiornaArmi, aggiornaProiettili } from './armi.js';
 import { pensaBot, creaStatoBot } from './bot.js';
 import { GestoreEventi } from './eventi.js';
@@ -125,7 +126,7 @@ export class Simulazione {
     const prossimaSquadra = () => { if (nelSq >= dim) { squadra++; nelSq = 0; } nelSq++; return squadra; };
     for (const g of giocatori) {
       const sq = coop ? 0 : prossimaSquadra();
-      this.aggiungiMech(id++, g.nome, g.aspetto, sq, true, g.pid);
+      this.aggiungiMech(id++, g.nome, g.aspetto, sq, true, g.pid).chiave = g.chiave || null;
     }
     if (coop) { squadra = 1; nelSq = 0; }
     else if (nelSq > 0) { squadra++; nelSq = 0; }
@@ -186,9 +187,31 @@ export class Simulazione {
 
   riceviInput(id, inp) {
     const m = this.perId.get(id);
-    if (!m || !m.umano) return;
+    if (!m || !m.umano || !inp) return;
+    // i comandi arrivano ripetuti (ridondanza) e anche fuori ordine: si tengono solo quelli nuovi
+    if (inp.seq <= (m.seqRicevuto || 0)) return;
+    m.seqRicevuto = inp.seq;
     m.coda.push(inp);
     if (m.coda.length > 20) m.coda.splice(0, m.coda.length - 20);
+  }
+
+  // armi montate di ogni mech, spedite a parte e solo quando cambiano
+  slotLista() { return this.mech.map((m) => [m.id, slotStr(m.slot)]); }
+
+  // un giocatore torna (stessa chiave di sessione, nuovo collegamento): riprende il suo mech
+  riconnetti(pid, chiave) {
+    const m = this.mech.find((x) => (chiave && x.chiave === chiave) || x.pid === pid);
+    if (!m || (!m.chiave && !m.pid)) return null;
+    m.pid = pid;
+    if (m.disconnesso) {
+      m.disconnesso = false;
+      m.umano = true;
+      m.bot = null;
+      m.coda = [];
+      m.seqRicevuto = 0;
+      this.ev({ k: 'ann', tipo: 'bene', testo: `${m.nome} è tornato in partita` });
+    }
+    return m;
   }
 
   disconnetti(pid) {
@@ -623,9 +646,9 @@ export class Simulazione {
       t: 'snap',
       tm: r2(this.tempo),
       m: this.mech.map((m) => [
-        m.id, STATI.indexOf(m.stato), r2(m.x), r2(m.y), r2(m.z), r3(m.yaw), r3(m.ap),
+        m.id, STATI.indexOf(m.stato), r1(m.x), r1(m.y), r1(m.z), r2(m.yaw), r2(m.ap),
         Math.ceil(m.hp.t), Math.ceil(m.hp.bs), Math.ceil(m.hp.bd), Math.ceil(m.hp.g),
-        slotStr(m.slot), this.flags(m), Math.ceil(m.scudo), r2(m.vx), r2(m.vz), m.imbarcatoSu || 0,
+        this.flags(m), Math.ceil(m.scudo), Math.round(m.vx), Math.round(m.vz), m.imbarcatoSu || 0,
       ]),
       z: [r2(z.cx), r2(z.cz), r2(z.r), z.fase, z.stato === 'attesa' ? 0 : z.stato === 'chiusura' ? 1 : 2, r2(z.t), r2(z.tcx), r2(z.tcz), r2(z.tr)],
       mis: this.proiettili.filter((p) => p.bers !== undefined).map((p) => [p.id, r2(p.x), r2(p.y), r2(p.z)]),
