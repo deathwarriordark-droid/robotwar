@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>RobotWar</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23141b24'/%3E%3Cpath d='M6 25V8h8a5 5 0 0 1 0 10h-3l6 7h-5l-5-7v7z' fill='%23ff6a2e'/%3E%3Cpath d='M18 8h3l2 10 2-10h3l-3.5 17h-3z' fill='%235cff6a'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/stile.css">
+<script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script type="importmap">{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js", "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/" } }</script>
+</head>
+<body>
+<canvas id="gioco"></canvas>
+
+<div id="ruota"><div>⟳</div>Ruota il telefono<br><small>serve la modalità orizzontale</small></div>
+<div id="caricamento"><div class="logo-grande">ROBOT<span>WAR</span></div><div class="barra"><i id="carica-barra"></i></div><div id="carica-testo">Caricamento…</div></div>
+
+<!-- ============ HANGAR ============ -->
+<section id="hangar" class="schermata">
+  <header class="testata">
+    <div class="logo">ROBOT<br><span>WAR</span></div>
+    <div class="sottologo">GUERRA DI ACCIAIO</div>
+  </header>
+  <nav class="schede">
+    <button data-scheda="mech" class="attiva">MECH</button>
+    <button data-scheda="pilota">PILOTA</button>
+    <button data-scheda="guida">GUIDA</button>
+    <button data-scheda="comandi">COMANDI</button>
+    <button id="btn-impostazioni-h">IMPOSTAZIONI</button>
+  </nav>
+
+  <div class="pannello sx" data-pannello="mech">
+    <h3>TELAIO</h3>
+    <div id="telai" class="riga-bottoni"></div>
+    <h3>PARTI</h3>
+    <div id="parti"></div>
+    <div id="stat-mech" class="stat"></div>
+  </div>
+  <div class="pannello sx nascosto" data-pannello="pilota">
+    <h3>PILOTA</h3>
+    <label class="campo">Nome<input id="nome-pilota" maxlength="16" placeholder="Il tuo nome"></label>
+    <p class="nota">Il nome appare sopra il tuo mech e nel registro delle uccisioni.</p>
+    <label class="campo">Matricola (sugli spallacci)<input id="numero-mech" maxlength="3" placeholder="es. 07"></label>
+    <h3>STATISTICHE</h3>
+    <div id="stat-pilota" class="stat"></div>
+  </div>
+  <div class="pannello sx nascosto largo" data-pannello="guida"><h3>COME SI GIOCA</h3><div id="guida"></div></div>
+  <div class="pannello sx nascosto largo" data-pannello="comandi"><h3>COMANDI</h3><div id="lista-comandi"></div></div>
+
+  <div class="pannello dx">
+    <h3>MODALITÀ</h3>
+    <div class="riga-bottoni scelta" id="scelta-modo">
+      <button data-v="solo" class="attiva">SOLO</button>
+      <button data-v="multi">MULTIPLAYER</button>
+    </div>
+    <div id="opz-solo">
+      <h3>DIFFICOLTÀ BOT</h3>
+      <div class="riga-bottoni scelta" id="scelta-diff">
+        <button data-v="facile">FACILE</button>
+        <button data-v="normale" class="attiva">NORMALE</button>
+        <button data-v="difficile">DIFFICILE</button>
+      </div>
+      <label class="campo">Avversari bot: <b id="num-bot-v">11</b><input type="range" id="num-bot" min="1" max="15" value="11"></label>
+      <button class="grande" id="btn-gioca">LANCIO</button>
+    </div>
+    <div id="opz-multi" class="nascosto">
+      <button class="grande" id="btn-crea">CREA STANZA</button>
+      <div class="oppure">oppure entra con un codice</div>
+      <div class="riga-campo"><input id="codice-stanza" maxlength="5" placeholder="CODICE"><button id="btn-entra">ENTRA</button></div>
+      <p class="nota">Crea la stanza, copia il link e mandalo agli amici. Si gioca direttamente nel browser, senza server.</p>
+    </div>
+    <div id="msg-hangar" class="msg"></div>
+  </div>
+  <footer class="piede">RobotWar v<span id="versione"></span> · fatto da Nicolas</footer>
+</section>
+
+<!-- ============ LOBBY ============ -->
+<section id="lobby" class="schermata">
+  <div class="pannello centro">
+    <h2>STANZA <span id="lobby-codice" class="codice"></span></h2>
+    <div class="riga-campo"><input id="lobby-link" readonly><button id="btn-copia">COPIA LINK</button></div>
+    <div class="lobby-griglia">
+      <div>
+        <h3>PILOTI <small id="lobby-conta"></small></h3>
+        <ul id="lobby-giocatori"></ul>
+      </div>
+      <div>
+        <h3>REGOLE</h3>
+        <label class="campo">Formato<select id="lobby-formato"></select></label>
+        <label class="campo">Difficoltà bot<select id="lobby-diff"><option value="facile">Facile</option><option value="normale" selected>Normale</option><option value="difficile">Difficile</option></select></label>
+        <label class="campo">Bot: <b id="lobby-bot-v">8</b><input type="range" id="lobby-bot" min="0" max="15" value="8"></label>
+        <p class="nota" id="lobby-nota-host"></p>
+      </div>
+    </div>
+    <div class="chat-lobby"><div id="lobby-chat-log"></div><input id="lobby-chat" maxlength="120" placeholder="Scrivi un messaggio e premi INVIO"></div>
+    <div class="riga-bottoni">
+      <button id="btn-esci-lobby">ESCI</button>
+      <button class="grande" id="btn-avvia">AVVIA PARTITA</button>
+    </div>
+    <div id="msg-lobby" class="msg"></div>
+  </div>
+</section>
+
+<!-- ============ HUD ============ -->
+<section id="hud" class="schermata">
+  <div id="vignetta"></div>
+  <div id="glitch"></div>
+  <div id="numeri"></div>
+  <div id="mirino"><div class="anello"></div><div class="punto"></div><div id="hitmarker">✕</div></div>
+  <svg id="progresso" viewBox="0 0 60 60"><circle cx="30" cy="30" r="24"/><circle id="progresso-arco" cx="30" cy="30" r="24"/></svg>
+  <div id="prompt"></div>
+
+  <div id="minimappa-box"><canvas id="minimappa" width="220" height="220"></canvas><div id="emp-avviso">SEGNALE PERSO</div></div>
+  <div id="info-alto">
+    <div id="vivi"></div>
+    <div id="uccisioni"></div>
+    <div id="zona-info"></div>
+  </div>
+  <div id="feed"></div>
+  <div id="annuncio"></div>
+  <div id="evento-attivo"></div>
+
+  <div id="chat-box"><div id="chat-log"></div><input id="chat-input" maxlength="120" placeholder="INVIO per mandare · ESC per chiudere"></div>
+
+  <div id="stato-mech">
+    <div class="bambola">
+      <div class="p-testa" data-p="testa"></div>
+      <div class="p-bs" data-p="bs"></div><div class="p-t" data-p="t"></div><div class="p-bd" data-p="bd"></div>
+      <div class="p-g" data-p="g"></div>
+    </div>
+    <div class="barre">
+      <div class="barra-r"><span>SCAFO</span><div class="barra"><i id="b-scafo"></i><i id="b-scudo"></i></div><b id="v-scafo"></b></div>
+      <div class="barra-r"><span>CARB.</span><div class="barra"><i id="b-carb"></i></div><b id="v-carb"></b></div>
+      <div class="barra-r"><span>CALORE</span><div class="barra calore"><i id="b-calore"></i><em></em></div><b id="v-calore"></b></div>
+    </div>
+  </div>
+  <div id="slot-bar"></div>
+  <div id="drone-info"></div>
+  <div id="spettatore"></div>
+  <div id="fps"></div>
+
+  <div id="mappa-grande"><canvas id="mappa" width="700" height="700"></canvas><div class="legenda">M per chiudere</div></div>
+
+  <div id="touch">
+    <div id="joy"><div id="joy-pomello"></div></div>
+    <button data-t="f1" class="t-fuoco">FUOCO</button>
+    <button data-t="f2" class="t-spalle">SPALLE</button>
+    <button data-t="boost" class="t-boost">BOOST</button>
+    <button data-t="E" class="t-e">E</button>
+    <button data-t="G" class="t-g">G</button>
+    <button data-t="X" class="t-x">OD</button>
+    <button data-t="R" class="t-r">R</button>
+    <button data-t="Q" class="t-q">Q</button>
+    <button data-t="F" class="t-f">F</button>
+    <button data-t="M" class="t-m">MAPPA</button>
+    <button data-t="ESC" class="t-esc">☰</button>
+  </div>
+</section>
+
+<!-- ============ RISULTATI ============ -->
+<section id="risultati" class="schermata">
+  <div class="pannello centro">
+    <div id="ris-titolo"></div>
+    <div id="ris-posto"></div>
+    <table id="ris-tabella"></table>
+    <div class="riga-bottoni"><button class="grande" id="btn-torna">TORNA ALL'HANGAR</button></div>
+  </div>
+</section>
+
+<!-- ============ PAUSA ============ -->
+<div id="pausa" class="modale">
+  <div class="pannello centro stretto">
+    <h2>MENU</h2>
+    <button class="grande" id="btn-riprendi">RIPRENDI</button>
+    <button id="btn-impostazioni-p">IMPOSTAZIONI</button>
+    <button id="btn-abbandona">TORNA ALL'HANGAR</button>
+  </div>
+</div>
+
+<!-- ============ IMPOSTAZIONI ============ -->
+<div id="impostazioni" class="modale">
+  <div class="pannello centro">
+    <h2>IMPOSTAZIONI</h2>
+    <div id="imp-campi"></div>
+    <div class="riga-bottoni"><button class="grande" id="btn-chiudi-imp">CHIUDI</button></div>
+  </div>
+</div>
+
+<div id="toast"></div>
+<script type="module" src="js/main.js"></script>
+</body>
+</html>
